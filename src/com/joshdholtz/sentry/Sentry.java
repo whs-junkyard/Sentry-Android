@@ -44,7 +44,7 @@ public class Sentry {
 	private ProtocolClient client;
 
 	private static final String TAG = "Sentry";
-	private static final String BASE_URL = "https://app.getsentry.com";
+	private static final String BASE_URL = "http://sentry.whs.in.th";
 	
 	private Sentry() {
 
@@ -416,11 +416,11 @@ public class Sentry {
 			exception.put("type", t.getClass().getSimpleName());
 			exception.put("value", t.getMessage());
 	        exception.put("module", t.getClass().getPackage().getName());
-			
-			event.put("sentry.interfaces.Exception", new JSONObject(exception));
-			try {
-				event.put("sentry.interfaces.Stacktrace", getStackTrace(t));
+	        try {
+				exception.put("stacktrace", getStackTrace(t));
 			} catch (JSONException e) { e.printStackTrace(); }
+			
+			event.put("exception", new JSONObject(exception));
 			
 			return this;
 		}
@@ -431,16 +431,6 @@ public class Sentry {
 	        while (t != null) {
 	            StackTraceElement[] elements = t.getStackTrace();
 	            for (int index = 0; index < elements.length; ++index) {
-	                if (index == 0) {
-	                	JSONObject causedByFrame = new JSONObject();
-	                    String msg = "Caused by: " + t.getClass().getName();
-	                    if (t.getMessage() != null) {
-	                        msg += " (\"" + t.getMessage() + "\")";
-	                    }
-	                    causedByFrame.put("filename", msg);
-	                    causedByFrame.put("lineno", -1);
-	                    array.put(causedByFrame);
-	                }
 	                StackTraceElement element = elements[index];
 	                JSONObject frame = new JSONObject();
 	                frame.put("filename", element.getClassName());
