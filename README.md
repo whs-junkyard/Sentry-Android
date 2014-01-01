@@ -22,7 +22,7 @@ public class MainActivity extends Activity {
 ````
 
 ## How To Get Started
-- Download the [Sentry-Android JAR](https://github.com/joshdholtz/Sentry-Android/raw/master/builds/sentry-0.1.2.jar)
+- Download the [Sentry-Android JAR](https://github.com/joshdholtz/Sentry-Android/raw/master/builds/sentry-0.1.4.jar)
 - Download the [Protocol JAR](https://github.com/joshdholtz/Protocol-Android/raw/master/builds/protocol-1.0.4.jar) (Required dependency) - [View more info](https://github.com/joshdholtz/Protocol-Android)
 - Place both the JARs in the Android project's "libs" directory
 - Code
@@ -52,6 +52,41 @@ Sentry.captureEvent(new Sentry.SentryEventBuilder()
 	.setCulprit("Josh Holtz")
 	.setTimestamp(System.currentTimeMillis())
 );
+
+````
+
+### Set a listener to intercept the SentryEventBuilder before each capture
+```` java
+// CALL THIS BEFORE CALLING Sentry.init
+// Sets a listener to intercept the SentryEventBuilder before 
+// each capture to set values that could change state
+Sentry.setCaptureListener(new SentryEventCaptureListener() {
+
+	@Override
+	public SentryEventBuilder beforeCapture(SentryEventBuilder builder) {
+		
+		// Needs permission - <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+		ConnectivityManager connManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+		NetworkInfo mWifi = connManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
+
+		// Sets extra key if wifi is connected
+		try {
+			builder.getExtra().put("wifi", String.valueOf(mWifi.isConnected()));
+			builder.getTags().put("tag_1", "value_1");
+		} catch (JSONException e) {}
+		
+		return builder;
+	}
+	
+});
+
+````
+
+## Use for self hosted Sentry
+
+### Init with your base url
+```` java
+Sentry.init(this, "http://your-base-url.com" "YOUR-SENTRY-DSN");
 
 ````
 

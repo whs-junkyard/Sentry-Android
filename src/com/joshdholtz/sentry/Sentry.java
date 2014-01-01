@@ -37,14 +37,16 @@ public class Sentry {
 	
 	private final static String VERSION = "0.1.2";
 
+	private String baseUrl;
 	private String dsn;
 	private String packageName;
 	private Map<String, String> tags;
+	private SentryEventCaptureListener captureListener;
 	
 	private ProtocolClient client;
 
 	private static final String TAG = "Sentry";
-	private static final String BASE_URL = "http://sentry.whs.in.th";
+	private static final String DEFAULT_BASE_URL = "https://app.getsentry.com";
 	
 	private Sentry() {
 
@@ -60,16 +62,22 @@ public class Sentry {
 	}
 
 	public static void init(Context context, String dsn) {
-		init(context, dsn, new HashMap<String, String>());
+		init(context, DEFAULT_BASE_URL, dsn, new HashMap<String, String>());
 	}
 
-	public static void init(Context context, String dsn, Map<String, String> tags) {
+	public static void init(Context context, String baseUrl, String dsn) {
+		init(context, baseUrl, dsn, new HashMap<String, String>());
+	}
+
+	public static void init(Context context, String baseUrl, String dsn, Map<String, String> tags) {
 		Sentry instance = Sentry.getInstance();
 		instance.dsn = dsn;
 		instance.packageName = context.getPackageName();
 		instance.tags = tags;
+		instance.baseUrl = baseUrl;
 
 		instance.client = new ProtocolClient(BASE_URL);
+		instance.client.setDebug(true);
 
 		submitStackTraces(context);
 
@@ -89,6 +97,7 @@ public class Sentry {
 		String header = "";
 		
 		Uri uri = Uri.parse(Sentry.getInstance().dsn);
+		Log.d("Sentry", "URI - " + uri);
 		String authority = uri.getAuthority().replace("@" + uri.getHost(), "");
 		
 		String[] authorityParts = authority.split(":");
@@ -112,6 +121,13 @@ public class Sentry {
 		return projectId;
 	}
 	
+	/**
+	 * @param captureListener the captureListener to set
+	 */
+	public static void setCaptureListener(SentryEventCaptureListener captureListener) {
+		Sentry.getInstance().captureListener = captureListener;
+	}
+
 	public static void captureMessage(String message) {
 		Sentry.captureMessage(message, SentryEventLevel.INFO);
 	}
@@ -191,10 +207,15 @@ public class Sentry {
 	}
 	
 	public static void captureEvent(SentryEventBuilder builder) {
+		if (Sentry.getInstance().captureListener != null) {
+			builder = Sentry.getInstance().captureListener.beforeCapture(builder);
+		}
+		
 		JSONRequestData requestData = new JSONRequestData(builder.event);
 		requestData.addHeader("X-Sentry-Auth", createXSentryAuthHeader());
 		requestData.addHeader("User-Agent", "sentry-android/" + VERSION);
-
+		requestData.addHeader("Content-Type", "application/json; charset=utf-8");
+		
 		Log.d(TAG, "Request - " + new JSONObject(builder.event).toString());
 
 		Sentry.getInstance().client.doPost("/api/" + getProjectId() + "/store/", requestData, new ProtocolResponseHandler() {
@@ -273,6 +294,12 @@ public class Sentry {
 			}
 		}
 
+	}
+	
+	public abstract static class SentryEventCaptureListener {
+		
+		public abstract SentryEventBuilder beforeCapture(SentryEventBuilder builder);
+		
 	}
 	
 	public static class SentryEventBuilder {
@@ -372,8 +399,21 @@ public class Sentry {
 		 * @return
 		 */
 		public SentryEventBuilder setTags(Map<String,String> tags) {
-			event.put("tags", new JSONObject(tags));
+			setTags(new JSONObject(tags));
 			return this;
+		}
+		
+		public SentryEventBuilder setTags(JSONObject tags) {
+			event.put("tags", tags);
+			return this;
+		}
+		
+		public JSONObject getTags() {
+			if (!event.containsKey("tags")) {
+				setTags(new HashMap<String, String>());
+			}
+			
+			return (JSONObject) event.get("tags");
 		}
 		
 		/**
@@ -402,10 +442,23 @@ public class Sentry {
 		 * @return
 		 */
 		public SentryEventBuilder setExtra(Map<String,String> extra) {
-			event.put("extra", new JSONObject(extra));
+			setExtra(new JSONObject(extra));
 			return this;
 		}
-
+		
+		public SentryEventBuilder setExtra(JSONObject extra) {
+			event.put("extra", extra);
+			return this;
+		}
+		
+		public JSONObject getExtra() {
+			if (!event.containsKey("extra")) {
+				setExtra(new HashMap<String, String>());
+			}
+			
+			return (JSONObject) event.get("extra");
+		}
+		
 		/**
 		 *
 		 * @param t
