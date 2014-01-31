@@ -1,100 +1,36 @@
-# Sentry-Android - Sentry Client for Android
-It does what every Sentry client needs to do
+# Sentry-Android
 
-Below is an example of how to register Sentry-Android to handle uncaught exceptions
+Sentry is an open source exception logger - getsentry.com
 
-```` java
+This is a Sentry client for Android application forked from [joshdholtz/Sentry-Android](https://github.com/joshdholtz/Sentry-Android) with full stack trace logging from [sounddrop/Sentry-Android](https://github.com/soundrop/Sentry-Android) and I added some stuff over it
 
-public class MainActivity extends Activity {
+- Use [AsyncHTTP](http://loopj.com/android-async-http/) instead of Protocol
+- Send full exception stack trace
+- Send device info
 
-	@Override
-	public void onCreate(Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
-		setContentView(R.layout.activity_main);
+My fork is developed as part of [KUSmartBus](https://play.google.com/store/apps/details?id=th.in.whs.ku.bus) (Thai store only) and funded by [Department of Civil Engineering, Faculty of Engineering, Kasetsart University](http://ce.eng.ku.ac.th/main.html).
 
-		// Sentry will look for uncaught exceptions from previous runs and send them		
-		Sentry.init(this, "YOUR-SENTRY-DSN");
+## Install
 
-	}
+Note that I didn't test this with Maven or Gradle, only Eclipse.
 
-}
-		
+1. Right click on package explorer in Eclipse and Import>Existing Android Code into Workspace
+2. Right click this project > Java Build Path > Libraries and add the JAR of [AsyncHTTP](http://loopj.com/android-async-http/) (tested with version 1.4.4)
+
+## Usage
+
+Put this in your root activity.
+
+````java
+PackageInfo pInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+HashMap<String, String> tags = new HashMap<String, String>();
+tags.put("version", pInfo.versionName);
+tags.put("debug", BuildConfig.DEBUG ? "true" : "false");
+Sentry.init(this, "https://app.getsentry.com", "dsn", tags);
 ````
 
-## How To Get Started
-- Download the [Sentry-Android JAR](https://github.com/joshdholtz/Sentry-Android/raw/master/builds/sentry-0.1.4.jar)
-- Download the [Protocol JAR](https://github.com/joshdholtz/Protocol-Android/raw/master/builds/protocol-1.0.4.jar) (Required dependency) - [View more info](https://github.com/joshdholtz/Protocol-Android)
-- Place both the JARs in the Android project's "libs" directory
-- Code
-
-## This Is How We Do It
-
-### Capture a message
-```` java
-Sentry.captureMessage("Something significant may have happened");
-
-````
-
-### Capture a caught exception
-```` java
-try {
-	JSONObject obj = new JSONObjet();
-} catch (JSONException e) { 
-	Sentry.captureException(e);
-}
-
-````
-
-### Capture custom event
-```` java
-Sentry.captureEvent(new Sentry.SentryEventBuilder()
-	.setMessage("Being awesome")
-	.setCulprit("Josh Holtz")
-	.setTimestamp(System.currentTimeMillis())
-);
-
-````
-
-### Set a listener to intercept the SentryEventBuilder before each capture
-```` java
-// CALL THIS BEFORE CALLING Sentry.init
-// Sets a listener to intercept the SentryEventBuilder before 
-// each capture to set values that could change state
-Sentry.setCaptureListener(new SentryEventCaptureListener() {
-
-	@Override
-	public SentryEventBuilder beforeCapture(SentryEventBuilder builder) {
-		
-		// Needs permission - <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-		ConnectivityManager connManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-		NetworkInfo mWifi = connManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-
-		// Sets extra key if wifi is connected
-		try {
-			builder.getExtra().put("wifi", String.valueOf(mWifi.isConnected()));
-			builder.getTags().put("tag_1", "value_1");
-		} catch (JSONException e) {}
-		
-		return builder;
-	}
-	
-});
-
-````
-
-## Use for self hosted Sentry
-
-### Init with your base url
-```` java
-Sentry.init(this, "http://your-base-url.com" "YOUR-SENTRY-DSN");
-
-````
-
-## Contact
-
-Email: [josh@rokkincat.com](mailto:josh@rokkincat.com)<br/>
-Twitter: [@joshdholtz](http://twitter.com/joshdholtz)
+Don't forget to change sentry server and DSN to your own. Sentry will automatically capture app crashes and report them on next start.
 
 ## License
 
-Sentry-Android is available under the MIT license. See the LICENSE file for more info.
+MIT License
