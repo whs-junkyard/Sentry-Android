@@ -8,34 +8,43 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.text.SimpleDateFormat;
-import java.util.Calendar;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.zip.CRC32;
+import java.util.zip.Checksum;
 
-import org.apache.http.HttpResponse;
+import org.apache.http.Header;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.message.BasicHeader;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.joshdholtz.protocol.lib.ProtocolClient;
-import com.joshdholtz.protocol.lib.requests.JSONRequestData;
-import com.joshdholtz.protocol.lib.responses.ProtocolResponseHandler;
-import com.joshdholtz.sentry.Sentry.SentryEventBuilder.SentryEventLevel;
-
 import android.content.Context;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Log;
+
+import com.joshdholtz.sentry.Sentry.SentryEventBuilder.SentryEventLevel;
+import com.loopj.android.http.AsyncHttpClient;
+import com.loopj.android.http.AsyncHttpResponseHandler;
 
 public class Sentry {
 	
-	private final static String VERSION = "0.1.2";
+	private final static String VERSION = "1.0";
 
 	private String baseUrl;
 	private String dsn;
@@ -43,7 +52,7 @@ public class Sentry {
 	private Map<String, String> tags;
 	private SentryEventCaptureListener captureListener;
 	
-	private ProtocolClient client;
+	private AsyncHttpClient client;
 
 	private static final String TAG = "Sentry";
 	private static final String DEFAULT_BASE_URL = "https://app.getsentry.com";
@@ -76,8 +85,8 @@ public class Sentry {
 		instance.tags = tags;
 		instance.baseUrl = baseUrl;
 
-		instance.client = new ProtocolClient(BASE_URL);
-		instance.client.setDebug(true);
+		instance.client = new AsyncHttpClient();
+		instance.client.setUserAgent("sentry-android/" + VERSION);
 
 		submitStackTraces(context);
 
@@ -207,26 +216,40 @@ public class Sentry {
 	}
 	
 	public static void captureEvent(SentryEventBuilder builder) {
-		if (Sentry.getInstance().captureListener != null) {
-			builder = Sentry.getInstance().captureListener.beforeCapture(builder);
+		Sentry instance = Sentry.getInstance();
+		if (instance.captureListener != null) {
+			builder = instance.captureListener.beforeCapture(builder);
 		}
 		
-		JSONRequestData requestData = new JSONRequestData(builder.event);
-		requestData.addHeader("X-Sentry-Auth", createXSentryAuthHeader());
-		requestData.addHeader("User-Agent", "sentry-android/" + VERSION);
-		requestData.addHeader("Content-Type", "application/json; charset=utf-8");
+		JSONObject requestData = new JSONObject(builder.event);
 		
-		Log.d(TAG, "Request - " + new JSONObject(builder.event).toString());
+		Header[] headers = new Header[]{
+				new BasicHeader("X-Sentry-Auth", createXSentryAuthHeader())
+		};
+		
+		Log.d(TAG, "Request - " + requestData.toString());
 
-		Sentry.getInstance().client.doPost("/api/" + getProjectId() + "/store/", requestData, new ProtocolResponseHandler() {
-
-		    @Override
-		    public void handleResponse(HttpResponse response, int status, byte[] data) {
-		        String responseData = new String(data);
-		        Log.d(TAG, "SendEvent - " + status + " " + responseData);
-		    }
-
-		});
+		try {
+			instance.client.post(
+					null,
+					instance.baseUrl + "/api/" + getProjectId() + "/store/",
+					headers,
+					new StringEntity(requestData.toString()), 
+					"application/json; charset=utf-8",
+					new AsyncHttpResponseHandler() {
+					    @Override
+					    public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
+					    	Log.d(TAG, "SendEvent - " + statusCode + " " + new String(responseBody));
+					    }
+					    @Override
+					    public void onFailure(int statusCode, Header[] headers, byte[] responseBody, Throwable error){
+					    	Log.e(TAG, "SendEvent - " + statusCode + " " + new String(responseBody), error);
+					    }
+					}
+			);
+		} catch (UnsupportedEncodingException e) {
+			Log.e(TAG, "SendEvent", e);
+		}
 	}
 
 	private static class SentryUncaughtExceptionHandler implements UncaughtExceptionHandler {
@@ -331,6 +354,8 @@ public class Sentry {
 			event.put("event_id", UUID.randomUUID().toString().replace("-", ""));
 			this.setPlatform("android");
 			this.setTimestamp(System.currentTimeMillis());
+			this.setModule("android-sentry", Sentry.VERSION);
+			//this.setModule(AsyncHttpClient.class.getPackage().getName(), new AsyncHttpClient());
 		}
 		
 		/**
@@ -404,6 +429,14 @@ public class Sentry {
 		}
 		
 		public SentryEventBuilder setTags(JSONObject tags) {
+			try{
+				tags.put("device", Build.DEVICE);
+	    	    tags.put("device_name", Build.MODEL);
+	    	    tags.put("device_brand", Build.BRAND);
+	    	    tags.put("android_version", String.valueOf(Build.VERSION.SDK_INT));
+	    	    tags.put("android_version_name", Build.VERSION.RELEASE);
+			}catch(JSONException e){
+			}
 			event.put("tags", tags);
 			return this;
 		}
@@ -459,43 +492,117 @@ public class Sentry {
 			return (JSONObject) event.get("extra");
 		}
 		
+		public SentryEventBuilder setModule(String name, String version) {
+			if(!event.containsKey("modules")){
+				event.put("modules", new HashMap<String, String>());
+			}
+			((Map<String, String>) event.get("modules")).put(name, version);
+			return this;
+		} 
+		
+		public JSONObject getModule() {
+			if(!event.containsKey("modules")){
+				event.put("modules", new HashMap<String, String>());
+			}
+			return new JSONObject((Map<String, String>) event.get("modules"));
+		}
+		
+		public SentryEventBuilder setChecksum(String checksum) {
+			event.put("checksum", calculateChecksum(checksum));
+			return this;
+		}
+		
+		public String getChecksum(){
+			return (String) event.get("checksum");
+		}
+		
 		/**
 		 *
 		 * @param t
 		 * @return
 		 */
 		public SentryEventBuilder setException(Throwable t) {
-			Map<String, Object> exception = new HashMap<String, Object>();
-			exception.put("type", t.getClass().getSimpleName());
-			exception.put("value", t.getMessage());
-	        exception.put("module", t.getClass().getPackage().getName());
-	        try {
-				exception.put("stacktrace", getStackTrace(t));
-			} catch (JSONException e) { e.printStackTrace(); }
+			ArrayList<JSONObject> array = new ArrayList<JSONObject>();
 			
-			event.put("exception", new JSONObject(exception));
+			while(t != null){
+				Map<String, Object> exception = new HashMap<String, Object>();
+				exception.put("type", t.getClass().getSimpleName());
+				exception.put("value", t.getMessage());
+		        exception.put("module", t.getClass().getPackage().getName());
+		        try {
+					exception.put("stacktrace", getStackTrace(t));
+				} catch (JSONException e) { e.printStackTrace(); }
+		        array.add(new JSONObject(exception));
+		        t = t.getCause();
+			}
+			
+			Collections.reverse(array);
+			
+			event.put("exception", new JSONArray(array));
 			
 			return this;
 		}
 		
 		public static JSONObject getStackTrace(Throwable t) throws JSONException {
-			JSONArray array = new JSONArray();
+			ArrayList<JSONObject> array = new ArrayList<JSONObject>();
+			Collection<String> notInApp = getNotInAppFrames();
 			
-	        while (t != null) {
-	            StackTraceElement[] elements = t.getStackTrace();
-	            for (int index = 0; index < elements.length; ++index) {
-	                StackTraceElement element = elements[index];
-	                JSONObject frame = new JSONObject();
-	                frame.put("filename", element.getClassName());
-	                frame.put("function", element.getMethodName());
-	                frame.put("lineno", element.getLineNumber());
-	                array.put(frame);
-	            }
-	            t = t.getCause();
-	        }
+            StackTraceElement[] elements = t.getStackTrace();
+            for (int index = 0; index < elements.length; ++index) {
+                StackTraceElement element = elements[index];
+                JSONObject frame = new JSONObject();
+                frame.put("filename", element.getClassName());
+                frame.put("function", element.getMethodName());
+                frame.put("lineno", element.getLineNumber());
+                
+                boolean inApp = true;
+                for(String notInAppItem : notInApp){
+                	if(element.getClassName().startsWith(notInAppItem)){
+                		inApp = false;
+                	}
+                }
+                frame.put("in_app", inApp);
+                
+                array.add(frame);
+            }
+	            
+	        Collections.reverse(array);
 	        JSONObject stackTrace = new JSONObject();
-	        stackTrace.put("frames", array);
+	        stackTrace.put("frames", new JSONArray(array));
 	        return stackTrace;
+	    }
+		
+		// source: net.kencochrane.raven.event.EventBuilder
+		private static String calculateChecksum(String string) {
+			try{
+				byte[] bytes = string.getBytes("UTF-8");
+				Checksum checksum = new CRC32();
+		        checksum.update(bytes, 0, bytes.length);
+		        return Long.toHexString(checksum.getValue()).toUpperCase();
+			}catch(UnsupportedEncodingException e){
+				return "";
+			}
+	    }
+		
+		// source: net.kencochrane.raven.DefaultRavenFactory
+		protected static Collection<String> getNotInAppFrames() {
+	        return Arrays.asList(
+	        		"com.sun.",
+	                "java.",
+	                "javax.",
+	                "org.omg.",
+	                "sun.",
+	                "junit.",
+	                // android specific
+	                "com.android.",
+	                "android.",
+	                "com.google.",
+	                "libcore.",
+	                "dalvik.",
+	                "map.",
+	                // app specific
+	                Sentry.class.getPackage().getName()
+	        );
 	    }
 		
 	}
