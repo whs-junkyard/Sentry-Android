@@ -557,7 +557,9 @@ public class Sentry {
             for (int index = 0; index < elements.length; ++index) {
                 StackTraceElement element = elements[index];
                 JSONObject frame = new JSONObject();
-                frame.put("filename", element.getFileName());
+                // raven-java does not display filename as it will replace module name
+                // https://github.com/kencochrane/raven-java/blob/master/raven/src/main/java/net/kencochrane/raven/marshaller/json/StackTraceInterfaceBinding.java#L36
+                //frame.put("filename", element.getFileName());
                 frame.put("module", element.getClassName());
                 frame.put("function", element.getMethodName());
                 frame.put("lineno", element.getLineNumber());
