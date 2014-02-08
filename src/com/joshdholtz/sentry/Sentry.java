@@ -533,9 +533,8 @@ public class Sentry {
 			
 			while(t != null){
 				Map<String, Object> exception = new HashMap<String, Object>();
-				exception.put("type", t.getClass().getSimpleName());
+				exception.put("type", t.getClass().getName());
 				exception.put("value", t.getMessage());
-		        exception.put("module", t.getClass().getPackage().getName());
 		        try {
 					exception.put("stacktrace", getStackTrace(t));
 				} catch (JSONException e) { e.printStackTrace(); }
