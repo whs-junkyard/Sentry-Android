@@ -243,7 +243,14 @@ public class Sentry {
 					    }
 					    @Override
 					    public void onFailure(int statusCode, Header[] headers, byte[] responseBody, Throwable error){
-					    	Log.e(TAG, "SendEvent - " + statusCode + " " + new String(responseBody), error);
+					    	// http://sentry.whs.in.th/kusmartbus/android/group/138/
+					    	String body;
+					    	if(responseBody == null){
+					    		body = "";
+					    	}else{
+					    		body = new String(responseBody);
+					    	}
+					    	Log.e(TAG, "SendEvent - " + statusCode + " " + body, error);
 					    }
 					}
 			);
@@ -551,7 +558,8 @@ public class Sentry {
             for (int index = 0; index < elements.length; ++index) {
                 StackTraceElement element = elements[index];
                 JSONObject frame = new JSONObject();
-                frame.put("filename", element.getClassName());
+                frame.put("filename", element.getFileName());
+                frame.put("module", element.getClassName());
                 frame.put("function", element.getMethodName());
                 frame.put("lineno", element.getLineNumber());
                 
