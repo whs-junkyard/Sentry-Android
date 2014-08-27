@@ -2,11 +2,14 @@ package com.joshdholtz.sentry;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FilenameFilter;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
+import java.io.Serializable;
+import java.io.StreamCorruptedException;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
@@ -65,7 +68,6 @@ public class Sentry {
 		return LazyHolder.instance;
 	}
 
-
 	private static class LazyHolder {
 		private static Sentry instance = new Sentry();
 	}
@@ -88,18 +90,25 @@ public class Sentry {
 		instance.client = new AsyncHttpClient();
 		instance.client.setUserAgent("sentry-android/" + VERSION);
 
-		submitStackTraces(context);
-
+		
+		Sentry.getInstance().setupUncaughtExceptionHandler();
+	}
+	
+	private void setupUncaughtExceptionHandler() {
+		
 		UncaughtExceptionHandler currentHandler = Thread.getDefaultUncaughtExceptionHandler();
 		if (currentHandler != null) {
 			Log.d("Debugged", "current handler class="+currentHandler.getClass().getName());
-		}       
+		}
+		
 		// don't register again if already registered
 		if (!(currentHandler instanceof SentryUncaughtExceptionHandler)) {
 			// Register default exceptions handler
 			Thread.setDefaultUncaughtExceptionHandler(
 					new SentryUncaughtExceptionHandler(currentHandler, context));
 		}
+		
+		sendAllCachedCapturedEvents();
 	}
 	
 	private static String createXSentryAuthHeader() {
@@ -128,6 +137,13 @@ public class Sentry {
 		String projectId = path.substring(path.lastIndexOf("/") + 1);
 		
 		return projectId;
+	}
+
+	public static void sendAllCachedCapturedEvents() {
+		ArrayList<SentryEventRequest> unsentRequests = InternalStorage.getInstance().getUnsentRequests();
+		for (SentryEventRequest request : unsentRequests) {
+			Sentry.doCaptureEventPost(request);
+		}
 	}
 	
 	/**
@@ -163,8 +179,6 @@ public class Sentry {
 			.setException(t)
 			.setTags(getInstance().tags)
 		);
-		
-		
 	}
 
 	public static void captureUncaughtException(Context context, Throwable t) {
@@ -216,9 +230,11 @@ public class Sentry {
 	}
 	
 	public static void captureEvent(SentryEventBuilder builder) {
-		Sentry instance = Sentry.getInstance();
-		if (instance.captureListener != null) {
-			builder = instance.captureListener.beforeCapture(builder);
+		final SentryEventRequest request;
+		if (Sentry.getInstance().captureListener != null) {
+			request = new SentryEventRequest(Sentry.getInstance().captureListener.beforeCapture(builder));
+		} else {
+			request = new SentryEventRequest(builder);
 		}
 		
 		JSONObject requestData = new JSONObject(builder.event);
@@ -229,37 +245,44 @@ public class Sentry {
 		
 		Log.d(TAG, "Request - " + requestData.toString());
 
+		doCaptureEventPost(request);
+	}
+
+	private static void doCaptureEventPost(final SentryEventRequest request) {
 		try {
 			instance.client.post(
-					null,
-					instance.baseUrl + "/api/" + getProjectId() + "/store/",
-					headers,
-					new StringEntity(requestData.toString()), 
-					"application/json; charset=utf-8",
-					new AsyncHttpResponseHandler() {
-					    @Override
-					    public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
-					    	Log.d(TAG, "SendEvent - " + statusCode + " " + new String(responseBody));
-					    }
-					    @Override
-					    public void onFailure(int statusCode, Header[] headers, byte[] responseBody, Throwable error){
-					    	// http://sentry.whs.in.th/kusmartbus/android/group/138/
-					    	String body;
-					    	if(responseBody == null){
-					    		body = "";
-					    	}else{
-					    		body = new String(responseBody);
-					    	}
-					    	Log.e(TAG, "SendEvent - " + statusCode + " " + body, error);
-					    }
+				null,
+				instance.baseUrl + "/api/" + getProjectId() + "/store/",
+				headers,
+				new StringEntity(requestData.toString()), 
+				"application/json; charset=utf-8",
+				new AsyncHttpResponseHandler() {
+					@Override
+					public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
+						InternalStorage.getInstance().removeBuilder(request);
+						Log.d(TAG, "SendEvent - " + statusCode + " " + new String(responseBody));
 					}
+					@Override
+					public void onFailure(int status, Header[] headers, byte[] responseBody, Throwable error){
+						String body;
+						if(responseBody == null){
+							body = "";
+						}else{
+							body = new String(responseBody);
+						}
+
+						InternalStorage.getInstance().addRequest(request);
+
+						Log.e(TAG, "SendEvent - " + statusCode + " " + body, error);
+					}
+				}
 			);
 		} catch (UnsupportedEncodingException e) {
 			Log.e(TAG, "SendEvent", e);
 		}
 	}
 
-	private static class SentryUncaughtExceptionHandler implements UncaughtExceptionHandler {
+	private class SentryUncaughtExceptionHandler implements UncaughtExceptionHandler {
 
 		private UncaughtExceptionHandler defaultExceptionHandler;
 		private Context context;
@@ -273,66 +296,134 @@ public class Sentry {
 		@Override
 		public void uncaughtException(Thread thread, Throwable e) {
 			// Here you should have a more robust, permanent record of problems
-			Sentry.captureUncaughtException(context, e);
+			SentryEventBuilder eventBuilder = new SentryEventBuilder(e, SentryEventBuilder.SentryEventLevel.FATAL);
+			InternalStorage.getInstance().addRequest(new SentryEventRequest(eventBuilder));
+//			Sentry.captureUncaughtException(context, e);
 
 			//call original handler  
 			defaultExceptionHandler.uncaughtException(thread, e);  
 		}
 
 	}
+	
+	private static class InternalStorage {
 
-	private static String[] searchForStackTraces(Context context) {
-		File dir = getStacktraceLocation(context);
-		// Try to create the files folder if it doesn't exist
-		dir.mkdirs();
-		// Filter for ".stacktrace" files
-		FilenameFilter filter = new FilenameFilter() { 
-			public boolean accept(File dir, String name) {
-				return name.endsWith(".stacktrace"); 
-			} 
-		}; 
-		return dir.list(filter); 
-	}
+		private final static String FILE_NAME = "unsent_requests";
+		private ArrayList<SentryEventRequest> unsentRequests;
+		
+		private static InternalStorage getInstance() {
+			return LazyHolder.instance;
+		}
 
-	private static void submitStackTraces(final Context context) {
-		try {
-			Log.d(TAG, "Looking for exceptions to submit");
-			String[] list = searchForStackTraces(context);
-			if (list != null && list.length > 0) {
-				Log.d(TAG, "Found "+list.length+" stacktrace(s)");
-				for (int i=0; i < list.length; i++) {
-					File stacktrace = new File(getStacktraceLocation(context), list[i]);
+		private static class LazyHolder {
+			private static InternalStorage instance = new InternalStorage();
+		}
+		
+		private InternalStorage() {
+			this.unsentRequests = this.readObject(Sentry.getInstance().context);
+		}		
+		
+		/**
+		 * @return the unsentRequests
+		 */
+		public ArrayList<SentryEventRequest> getUnsentRequests() {
+			return unsentRequests;
+		}
 
-					ObjectInputStream ois = new ObjectInputStream(new FileInputStream(stacktrace));
-					Throwable t = (Throwable) ois.readObject();
-					ois.close();
-
-					captureException(t, SentryEventLevel.FATAL);
+		public void addRequest(SentryEventRequest request) {
+			synchronized(this) {
+				if (!this.unsentRequests.contains(request)) {
+					this.unsentRequests.add(request);
+					this.writeObject(Sentry.getInstance().context, this.unsentRequests);
 				}
 			}
-		} catch (Exception e) {
-			e.printStackTrace();
-		} finally {
+		}
+		
+		public void removeBuilder(SentryEventRequest request) {
+			synchronized(this) {
+				this.unsentRequests.remove(request);
+				this.writeObject(Sentry.getInstance().context, this.unsentRequests);
+			}
+		}
+
+		private void writeObject(Context context, ArrayList<SentryEventRequest> requests) {
 			try {
-				String[] list = searchForStackTraces(context);
-				for ( int i = 0; i < list.length; i ++ ) {
-					File file = new File(getStacktraceLocation(context), list[i]);
-					file.delete();
-				}
-			} catch (Exception e) {
+				FileOutputStream fos = context.openFileOutput(FILE_NAME, Context.MODE_PRIVATE);
+				ObjectOutputStream oos = new ObjectOutputStream(fos);
+				oos.writeObject(requests);
+				oos.close();
+				fos.close();
+			} catch (FileNotFoundException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
 
+		private ArrayList<SentryEventRequest> readObject(Context context) {
+			try {
+				FileInputStream fis = context.openFileInput(FILE_NAME);
+				ObjectInputStream ois = new ObjectInputStream(fis);
+				ArrayList<SentryEventRequest> requests = (ArrayList<SentryEventRequest>) ois.readObject();
+				return requests;
+			} catch (FileNotFoundException e) {
+				e.printStackTrace();
+			} catch (StreamCorruptedException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			} catch (ClassNotFoundException e) {
+				e.printStackTrace();
+			}
+			return new ArrayList<SentryEventRequest>();
+		}
 	}
-	
+
 	public abstract static class SentryEventCaptureListener {
 		
 		public abstract SentryEventBuilder beforeCapture(SentryEventBuilder builder);
 		
 	}
 	
-	public static class SentryEventBuilder {
+	public static class SentryEventRequest implements Serializable {
+		private String requestData;
+		private UUID uuid;
+		
+		public SentryEventRequest(SentryEventBuilder builder) {
+			this.requestData = new JSONObject(builder.event).toString();
+			this.uuid = UUID.randomUUID();
+		}
+		
+		/**
+		 * @return the requestData
+		 */
+		public String getRequestData() {
+			return requestData;
+		}
+
+		/**
+		 * @return the uuid
+		 */
+		public UUID getUuid() {
+			return uuid;
+		}
+
+		@Override
+		public boolean equals(Object other) {
+			SentryEventRequest otherRequest = (SentryEventRequest) other;
+			
+			if (this.uuid != null && otherRequest.uuid != null) {
+				return uuid.equals(otherRequest.uuid);
+			}
+			
+			return false;
+		}
+		
+	}
+
+	public static class SentryEventBuilder implements Serializable {
+
+		private static final long serialVersionUID = -8589756678369463988L;
 		
 		private final static SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 		static {
@@ -365,6 +456,17 @@ public class Sentry {
 			//this.setModule(AsyncHttpClient.class.getPackage().getName(), new AsyncHttpClient());
 		}
 		
+		public SentryEventBuilder(Throwable t, SentryEventLevel level) {
+			this();
+			
+			String culprit = getCause(t, t.getMessage());
+			
+			this.setMessage(t.getMessage())
+			.setCulprit(culprit)
+			.setLevel(level)
+			.setException(t);
+		}
+
 		/**
 		 * "message": "SyntaxError: Wattttt!"
 		 * @param message
@@ -438,10 +540,10 @@ public class Sentry {
 		public SentryEventBuilder setTags(JSONObject tags) {
 			try{
 				tags.put("device", Build.DEVICE);
-	    	    tags.put("device_name", Build.MODEL);
-	    	    tags.put("device_brand", Build.BRAND);
-	    	    tags.put("android_version", String.valueOf(Build.VERSION.SDK_INT));
-	    	    tags.put("android_version_name", Build.VERSION.RELEASE);
+				tags.put("device_name", Build.MODEL);
+				tags.put("device_brand", Build.BRAND);
+				tags.put("android_version", String.valueOf(Build.VERSION.SDK_INT));
+				tags.put("android_version_name", Build.VERSION.RELEASE);
 			}catch(JSONException e){
 			}
 			event.put("tags", tags);
@@ -535,11 +637,11 @@ public class Sentry {
 				Map<String, Object> exception = new HashMap<String, Object>();
 				exception.put("type", t.getClass().getName());
 				exception.put("value", t.getMessage());
-		        try {
+				try {
 					exception.put("stacktrace", getStackTrace(t));
 				} catch (JSONException e) { e.printStackTrace(); }
-		        array.add(new JSONObject(exception));
-		        t = t.getCause();
+				array.add(new JSONObject(exception));
+				t = t.getCause();
 			}
 			
 			Collections.reverse(array);
@@ -553,66 +655,66 @@ public class Sentry {
 			ArrayList<JSONObject> array = new ArrayList<JSONObject>();
 			Collection<String> notInApp = getNotInAppFrames();
 			
-            StackTraceElement[] elements = t.getStackTrace();
-            for (int index = 0; index < elements.length; ++index) {
-                StackTraceElement element = elements[index];
-                JSONObject frame = new JSONObject();
-                // raven-java does not display filename as it will replace module name
-                // https://github.com/kencochrane/raven-java/blob/master/raven/src/main/java/net/kencochrane/raven/marshaller/json/StackTraceInterfaceBinding.java#L36
-                //frame.put("filename", element.getFileName());
-                frame.put("module", element.getClassName());
-                frame.put("function", element.getMethodName());
-                frame.put("lineno", element.getLineNumber());
-                
-                boolean inApp = true;
-                for(String notInAppItem : notInApp){
-                	if(element.getClassName().startsWith(notInAppItem)){
-                		inApp = false;
-                	}
-                }
-                frame.put("in_app", inApp);
-                
-                array.add(frame);
-            }
-	            
-	        Collections.reverse(array);
-	        JSONObject stackTrace = new JSONObject();
-	        stackTrace.put("frames", new JSONArray(array));
-	        return stackTrace;
-	    }
+			StackTraceElement[] elements = t.getStackTrace();
+			for (int index = 0; index < elements.length; ++index) {
+				StackTraceElement element = elements[index];
+				JSONObject frame = new JSONObject();
+				// raven-java does not display filename as it will replace module name
+				// https://github.com/kencochrane/raven-java/blob/master/raven/src/main/java/net/kencochrane/raven/marshaller/json/StackTraceInterfaceBinding.java#L36
+				//frame.put("filename", element.getFileName());
+				frame.put("module", element.getClassName());
+				frame.put("function", element.getMethodName());
+				frame.put("lineno", element.getLineNumber());
+				
+				boolean inApp = true;
+				for(String notInAppItem : notInApp){
+					if(element.getClassName().startsWith(notInAppItem)){
+						inApp = false;
+					}
+				}
+				frame.put("in_app", inApp);
+				
+				array.add(frame);
+			}
+				
+			Collections.reverse(array);
+			JSONObject stackTrace = new JSONObject();
+			stackTrace.put("frames", new JSONArray(array));
+			return stackTrace;
+		}
 		
 		// source: net.kencochrane.raven.event.EventBuilder
 		private static String calculateChecksum(String string) {
 			try{
 				byte[] bytes = string.getBytes("UTF-8");
 				Checksum checksum = new CRC32();
-		        checksum.update(bytes, 0, bytes.length);
-		        return Long.toHexString(checksum.getValue()).toUpperCase();
+				checksum.update(bytes, 0, bytes.length);
+				return Long.toHexString(checksum.getValue()).toUpperCase();
 			}catch(UnsupportedEncodingException e){
 				return "";
 			}
-	    }
+		}
 		
 		// source: net.kencochrane.raven.DefaultRavenFactory
 		protected static Collection<String> getNotInAppFrames() {
-	        return Arrays.asList(
-	        		"com.sun.",
-	                "java.",
-	                "javax.",
-	                "org.omg.",
-	                "sun.",
-	                "junit.",
-	                // android specific
-	                "com.android.",
-	                "android.",
-	                "com.google.",
-	                "libcore.",
-	                "dalvik.",
-	                "map.",
-	                // app specific
-	                Sentry.class.getPackage().getName()
-	        );
-	    }
+			return Arrays.asList(
+					"com.sun.",
+					"java.",
+					"javax.",
+					"org.omg.",
+					"sun.",
+					"junit.",
+					// android specific
+					"com.android.",
+					"android.",
+					"com.google.",
+					"libcore.",
+					"dalvik.",
+					"map.",
+					// app specific
+					Sentry.class.getPackage().getName()
+			);
+		}
 		
 	}
 
