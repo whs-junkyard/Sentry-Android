@@ -4,7 +4,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.FilenameFilter;
+import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
@@ -22,7 +22,6 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
@@ -50,7 +49,9 @@ import com.loopj.android.http.AsyncHttpResponseHandler;
 
 public class Sentry {
 	
-	private final static String VERSION = "1.0";
+	private final static String VERSION = "1.1";
+	
+	private Context context;
 
 	private String baseUrl;
 	private String dsn;
@@ -85,6 +86,7 @@ public class Sentry {
 
 	public static void init(Context context, String baseUrl, String dsn, Map<String, String> tags) {
 		Sentry instance = Sentry.getInstance();
+		instance.context = context;
 		instance.dsn = dsn;
 		instance.packageName = context.getPackageName();
 		instance.tags = tags;
@@ -225,13 +227,6 @@ public class Sentry {
 		return new File(context.getCacheDir(), "crashes");
 	}
 	
-	private static String getStackTrace(Throwable t) {
-		StringWriter sw = new StringWriter();
-		PrintWriter pw = new PrintWriter(sw);
-		t.printStackTrace(pw);
-		return sw.toString();
-	}
-	
 	public static void captureEvent(SentryEventBuilder builder) {
 		final SentryEventRequest request;
 		if (Sentry.getInstance().captureListener != null) {
@@ -246,14 +241,6 @@ public class Sentry {
 		} else {
 			request = new SentryEventRequest(builder);
 		}
-		
-		JSONObject requestData = new JSONObject(builder.event);
-		
-		Header[] headers = new Header[]{
-				new BasicHeader("X-Sentry-Auth", createXSentryAuthHeader())
-		};
-		
-		Log.d(TAG, "Request - " + requestData.toString());
 
 		doCaptureEventPost(request);
 	}
@@ -275,12 +262,18 @@ public class Sentry {
 			InternalStorage.getInstance().addRequest(request);
 			return;
 		}
+		
+		Sentry instance = Sentry.getInstance();
+		Header[] headers = new Header[]{
+				new BasicHeader("X-Sentry-Auth", createXSentryAuthHeader())
+		};
+		
 		try {
 			instance.client.post(
 				null,
 				instance.baseUrl + "/api/" + getProjectId() + "/store/",
 				headers,
-				new StringEntity(requestData.toString()), 
+				new StringEntity(request.getRequestData()), 
 				"application/json; charset=utf-8",
 				new AsyncHttpResponseHandler() {
 					@Override
@@ -299,7 +292,7 @@ public class Sentry {
 
 						InternalStorage.getInstance().addRequest(request);
 
-						Log.e(TAG, "SendEvent - " + statusCode + " " + body, error);
+						Log.e(TAG, "SendEvent - " + status + " " + body, error);
 					}
 				}
 			);
