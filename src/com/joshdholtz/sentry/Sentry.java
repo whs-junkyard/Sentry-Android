@@ -44,8 +44,12 @@ import android.os.Build;
 import android.util.Log;
 
 import com.joshdholtz.sentry.Sentry.SentryEventBuilder.SentryEventLevel;
-import com.loopj.android.http.AsyncHttpClient;
-import com.loopj.android.http.AsyncHttpResponseHandler;
+import com.squareup.okhttp.Callback;
+import com.squareup.okhttp.MediaType;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
+import com.squareup.okhttp.Response;
 
 public class Sentry {
 	
@@ -59,7 +63,8 @@ public class Sentry {
 	private Map<String, String> tags;
 	private SentryEventCaptureListener captureListener;
 	
-	private AsyncHttpClient client;
+	private OkHttpClient client = new OkHttpClient();
+	public static final MediaType json = MediaType.parse("application/json; charset=utf-8");
 
 	private static final String TAG = "Sentry";
 	private static final String DEFAULT_BASE_URL = "https://app.getsentry.com";
@@ -91,9 +96,6 @@ public class Sentry {
 		instance.packageName = context.getPackageName();
 		instance.tags = tags;
 		instance.baseUrl = baseUrl;
-
-		instance.client = new AsyncHttpClient();
-		instance.client.setUserAgent("sentry-android/" + VERSION);
 
 		
 		Sentry.getInstance().setupUncaughtExceptionHandler();
@@ -263,42 +265,33 @@ public class Sentry {
 			return;
 		}
 		
-		Sentry instance = Sentry.getInstance();
-		Header[] headers = new Header[]{
-				new BasicHeader("X-Sentry-Auth", createXSentryAuthHeader())
-		};
+		Sentry instance = getInstance();
 		
-		try {
-			instance.client.post(
-				null,
-				instance.baseUrl + "/api/" + getProjectId() + "/store/",
-				headers,
-				new StringEntity(request.getRequestData()), 
-				"application/json; charset=utf-8",
-				new AsyncHttpResponseHandler() {
-					@Override
-					public void onSuccess(int statusCode, Header[] headers, byte[] responseBody) {
-						InternalStorage.getInstance().removeBuilder(request);
-						Log.d(TAG, "SendEvent - " + statusCode + " " + new String(responseBody));
-					}
-					@Override
-					public void onFailure(int status, Header[] headers, byte[] responseBody, Throwable error){
-						String body;
-						if(responseBody == null){
-							body = "";
-						}else{
-							body = new String(responseBody);
-						}
+		RequestBody body = RequestBody.create(json, request.getRequestData());
+		
+		Request req = new Request.Builder()
+			.url(instance.baseUrl + "/api/" + getProjectId() + "/store/")
+			.addHeader("User-Agent", "sentry-android/" + VERSION)
+			.addHeader("X-Sentry-Auth", createXSentryAuthHeader())
+			.post(body)
+			.build();
+		
+		instance.client.newCall(req).enqueue(new Callback(){
 
-						InternalStorage.getInstance().addRequest(request);
+			@Override
+			public void onResponse(Response res) throws IOException {
+				InternalStorage.getInstance().removeBuilder(request);
+				Log.d(TAG, "SendEvent - " + res.code() + " " + res.body().string());
+			}
+			
+			@Override
+			public void onFailure(Request req, IOException err) {
+				InternalStorage.getInstance().addRequest(request);
 
-						Log.e(TAG, "SendEvent - " + status + " " + body, error);
-					}
-				}
-			);
-		} catch (UnsupportedEncodingException e) {
-			Log.e(TAG, "SendEvent", e);
-		}
+				Log.e(TAG, "SendEvent - fail", err);
+			}
+			
+		});
 	}
 
 	private class SentryUncaughtExceptionHandler implements UncaughtExceptionHandler {
